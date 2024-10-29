@@ -26,12 +26,11 @@ def add_user_if_not_exists(user_id, username):
                 cur.execute(
                     """
                     INSERT INTO Customers (customer_id, loyalty_points, join_date, last_visit, name)
-                    VALUES (%s, %s, %s, NOW(), NOW(), %s)
+                    VALUES (%s, %s, NOW(), NOW(), %s)
                     """,
-                    (user_id, 5000, 0, username)
+                    (user_id, 5000, username)
                 )
             conn.commit()
-
 # Получения баланса пользователя
 def get_user_balance(user_id):
     with db_connect() as conn:
