@@ -1,0 +1,138 @@
+import telebot
+import psycopg2
+from telebot.types import ReplyKeyboardMarkup, KeyboardButton
+
+# Параметры для подключения к базе данных
+dbname = "cafepython"
+user = "postgres"
+password = "0000"
+host = "127.0.0.1"
+port = "5433"
+
+# Создание бота
+bot_token = '7648549183:AAG8QgZN2MO3mgSw20FMO4KG93SxUxTTzgw'
+bot = telebot.TeleBot(bot_token)
+
+# Переменная для хранения ID выбранного продукта
+selected_product_id = None
+
+# Подключение к базе данных
+def db_connect():
+    return psycopg2.connect(dbname=dbname, user=user, password=password, host=host, port=port)
+
+# Команда /start для администратора
+@bot.message_handler(commands=['start'])
+def admin_start(message):
+    markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(KeyboardButton("Просмотр заказов"))
+    markup.add(KeyboardButton("Пополнить склад"))
+    bot.send_message(message.chat.id, "Добро пожаловать, администратор! Выберите действие:", reply_markup=markup)
+
+# Команда для просмотра заказов
+@bot.message_handler(func=lambda message: message.text == "Просмотр заказов")
+def view_orders(message):
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT o.order_id, o.customer_id, o.total_price, o.order_date, c.name
+                FROM Orders o
+                JOIN Customers c ON o.customer_id = c.customer_id
+            """)
+            orders = cur.fetchall()
+            if orders:
+                response = "Список заказов:\n"
+                for order in orders:
+                    response += f"ID: {order[0]}, Клиент: {order[4]}, Сумма: {order[2]} баллов, Дата: {order[3]}\n"
+                bot.send_message(message.chat.id, response)
+            else:
+                bot.send_message(message.chat.id, "Нет заказов.")
+
+    # Добавляем кнопку "Назад" для возвращения в главное меню
+    markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add(KeyboardButton("Назад"))
+    bot.send_message(message.chat.id, "Выберите действие:", reply_markup=markup)
+
+# Команда для пополнения склада
+@bot.message_handler(func=lambda message: message.text == "Пополнить склад")
+def restock_inventory(message):
+    # Получаем категории продуктов
+    categories = get_all_categories()
+    markup = ReplyKeyboardMarkup(resize_keyboard=True)
+    for category in categories:
+        markup.add(KeyboardButton(category))
+    markup.add(KeyboardButton("Назад"))  # Кнопка "Назад"
+    bot.send_message(message.chat.id, "Выберите категорию:", reply_markup=markup)
+
+# Получение всех категорий
+def get_all_categories():
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT category FROM Products")
+            return [row[0] for row in cur.fetchall()]
+
+# Команда для выбора категории
+@bot.message_handler(func=lambda message: message.text in get_all_categories())
+def select_product(message):
+    category = message.text
+    show_products_in_category(message.chat.id, category)
+
+# Отображение продуктов в выбранной категории
+def show_products_in_category(chat_id, category):
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT p.product_id, p.name, p.price, COALESCE(i.stock_quantity, 0) AS stock_quantity
+                FROM Products p
+                LEFT JOIN Inventory i ON p.product_id = i.product_id
+                WHERE p.category = %s
+            """, (category,))
+            products = cur.fetchall()
+            if products:
+                markup = ReplyKeyboardMarkup(resize_keyboard=True)
+                for product in products:
+                    markup.add(KeyboardButton(f"{product[0]} - {product[1]} (доступно: {product[3]})"))
+                markup.add(KeyboardButton("Назад"))  # Кнопка "Назад"
+                bot.send_message(chat_id, f"Продукты в категории {category}:", reply_markup=markup)
+            else:
+                bot.send_message(chat_id, f"В категории {category} нет доступных продуктов.")
+                # Добавляем кнопку "Назад" при отсутствии продуктов
+                markup = ReplyKeyboardMarkup(resize_keyboard=True)
+                markup.add(KeyboardButton("Назад"))
+                bot.send_message(chat_id, "Выберите действие:", reply_markup=markup)
+
+# Обработка выбора продукта для пополнения
+@bot.message_handler(func=lambda message: message.text.count('-') > 0)
+def restock_product(message):
+    global selected_product_id
+    product_info = message.text.split(" - ")[0]
+    selected_product_id = int(product_info)  # Извлекаем ID продукта
+    bot.send_message(message.chat.id, "Введите количество для пополнения:")
+
+# Обработка количества для пополнения
+@bot.message_handler(func=lambda message: message.text.isdigit() and selected_product_id is not None)
+def update_inventory(message):
+    global selected_product_id  # Объявление переменной как глобальной
+    quantity = int(message.text)
+    with db_connect() as conn:
+        with conn.cursor() as cur:
+            # Обновление количества на складе
+            cur.execute("""
+                UPDATE Inventory
+                SET stock_quantity = stock_quantity + %s
+                WHERE product_id = %s
+            """, (quantity, selected_product_id))
+            conn.commit()
+            bot.send_message(message.chat.id, f"Склад пополнен! Продукт ID: {selected_product_id}, добавлено: {quantity}.")
+            # После обновления склада добавляем кнопку "Назад"
+            markup = ReplyKeyboardMarkup(resize_keyboard=True)
+            markup.add(KeyboardButton("Назад"))
+            bot.send_message(message.chat.id, "Выберите действие:", reply_markup=markup)
+    selected_product_id = None
+
+# Кнопка "Назад"
+@bot.message_handler(func=lambda message: message.text == "Назад")
+def go_back(message):
+    admin_start(message)
+
+# Запуск бота
+bot.polling()
